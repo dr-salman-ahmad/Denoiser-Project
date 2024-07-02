@@ -16,3 +16,9 @@ training:
   epochs: 1
   batch_size: 1
   validation_split: 0.2
+
+testing:
+  noisy_data_path: 'Dataset/noisy_dir'
+  clean_data_path: 'Dataset/clean_dir'
+  unet_model_path: 'Model/model.keras'
+  autoencoder_model_path: 'Model/autoencoder.keras'
