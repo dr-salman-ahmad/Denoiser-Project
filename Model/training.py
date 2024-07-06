@@ -1,17 +1,27 @@
 import os
 import numpy as np
 import yaml
-from tensorflow.keras.models import Model
+from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.layers import Input, Conv1D, MaxPooling1D, UpSampling1D, concatenate
 
 from Data.ingestion import process_files
 from Data.transformation import load_audio_files
 
-with open('../config.yaml', 'r') as file:
-    config = yaml.safe_load(file)
+
+def create_directories(*dirs):
+    for directory in dirs:
+        os.makedirs(directory, exist_ok=True)
 
 
-def unet_model(input_shape):
+def load_and_process_data(file_list, src_dir, dest_dir, sample_rate, target_duration):
+    process_files(file_list, src_dir, dest_dir)
+    audio_files = load_audio_files(dest_dir, sr=sample_rate, target_duration=target_duration)
+    audio_data = np.array(audio_files)
+    audio_data = np.expand_dims(audio_data, axis=-1)
+    return audio_data
+
+
+def build_unet_model(input_shape, config):
     inputs = Input(shape=input_shape)
 
     # Encoder
@@ -44,11 +54,10 @@ def unet_model(input_shape):
     output = Conv1D(1, 3, activation='linear', padding='same')(conv7)
 
     model = Model(inputs=inputs, outputs=output)
-
     return model
 
 
-def denoising_autoencoder_model(input_shape):
+def build_denoising_autoencoder_model(input_shape, config):
     input_signal = Input(shape=input_shape)
 
     # Encoder
@@ -65,64 +74,58 @@ def denoising_autoencoder_model(input_shape):
     decoded = Conv1D(1, 3, activation=config['model']['output_activation'], padding='same')(x)
 
     autoencoder = Model(input_signal, decoded)
-
     return autoencoder
 
 
-if __name__ == '__main__':
-    # Path to the directory containing the noisy and clean audio files
-    noisy_dir = config['data']['noisy_data_path']
-    clean_dir = config['data']['clean_data_path']
+def main():
+    with open('../config.yaml', 'r') as file:
+        config = yaml.safe_load(file)
 
-    os.makedirs('../Chunks', exist_ok=True)
+    # Create necessary directories
+    create_directories('../Chunks', config['data']['noisy_chunk_path'], config['data']['clean_chunk_path'])
 
-    # Directory to save the processed audio files
-    x_processed_dir = config['data']['noisy_chunk_path']
-    y_processed_dir = config['data']['clean_chunk_path']
+    # Process audio files
+    noisy_data = load_and_process_data(
+        os.listdir(config['data']['noisy_data_path'])[:1000],
+        config['data']['noisy_data_path'],
+        config['data']['noisy_chunk_path'],
+        config['data']['sample_rate'],
+        config['data']['data_duration']
+    )
 
-    os.makedirs(x_processed_dir, exist_ok=True)
-    os.makedirs(y_processed_dir, exist_ok=True)
+    clean_data = load_and_process_data(
+        os.listdir(config['data']['clean_data_path'])[:1000],
+        config['data']['clean_data_path'],
+        config['data']['clean_chunk_path'],
+        config['data']['sample_rate'],
+        config['data']['data_duration']
+    )
 
-    all_noisy_files = os.listdir(noisy_dir)
-    all_clean_files = os.listdir(clean_dir)
+    # Define input shape based on clean data
+    input_shape = clean_data.shape[1:]
 
-    # Limit to the first 1000 files
-    x_files_to_process = all_noisy_files[:1000]
-    y_files_to_process = all_clean_files[:1000]
+    # Build and compile U-Net model
+    model = build_unet_model(input_shape, config)
+    model.compile(optimizer=config['model']['optimizer'], loss=config['model']['loss'])
+    model.summary()
 
-    process_files(x_files_to_process, noisy_dir, x_processed_dir)
-    process_files(y_files_to_process, clean_dir, y_processed_dir)
+    # Train and save U-Net model
+    model.fit(noisy_data, clean_data, batch_size=config['training']['batch_size'], epochs=config['training']['epochs'],
+              validation_split=config['training']['validation_split'])
+    model.save("model.keras")
+
+    # Build and compile Denoising Autoencoder model
+    autoencoder = build_denoising_autoencoder_model(input_shape, config)
+    autoencoder.compile(optimizer=config['model']['optimizer'], loss=config['model']['loss'])
+    autoencoder.summary()
+
+    # Train and save Denoising Autoencoder model
+    autoencoder.fit(noisy_data, clean_data, batch_size=config['training']['batch_size'],
+                    epochs=config['training']['epochs'], validation_split=config['training']['validation_split'])
+    autoencoder.save("autoencoder.keras")
 
     print("Processing complete!")
 
-    # Load audio files for further processing
-    noisy_audio_files = load_audio_files(x_processed_dir, sr=config['data']['sample_rate'], target_duration=config['data']['data_duration'])
-    clean_audio_files = load_audio_files(y_processed_dir, sr=config['data']['sample_rate'], target_duration=config['data']['data_duration'])
 
-    # Convert lists to numpy arrays
-    clean_data = np.array(clean_audio_files)
-    noisy_data = np.array(noisy_audio_files)
-
-    # Expand dimensions for compatibility with Conv1D input shape
-    clean_data = np.expand_dims(clean_data, axis=-1)
-    noisy_data = np.expand_dims(noisy_data, axis=-1)
-
-    input_shape = clean_data.shape[1:]  # Assuming input shape based on clean_data
-    model = unet_model(input_shape)
-    model.summary()
-
-    # Compile the model
-    model.compile(optimizer=config['model']['optimizer'], loss=config['model']['loss'])
-
-    # Train the model
-    model.fit(noisy_data, clean_data, batch_size=config['training']['batch_size'], epochs=config['training']['epochs'], validation_split=config['training']['validation_split'])
-
-    model.save("model.keras")
-
-    # Denoising Auto Encoder
-    autoencoder = denoising_autoencoder_model(input_shape)
-    autoencoder.summary()
-
-    autoencoder.compile(optimizer=config['model']['optimizer'], loss=config['model']['loss'])
-    autoencoder.fit(noisy_data, clean_data, batch_size=config['training']['batch_size'], epochs=config['training']['epochs'], validation_split=config['training']['validation_split'])
-    autoencoder.save("autoencoder.keras")
+if __name__ == '__main__':
+    main()

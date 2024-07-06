@@ -18,7 +18,11 @@ training:
   validation_split: 0.2
 
 testing:
-  noisy_data_path: 'Dataset/noisy_dir'
-  clean_data_path: 'Dataset/clean_dir'
-  unet_model_path: 'Model/model.keras'
-  autoencoder_model_path: 'Model/autoencoder.keras'
+  noisy_data_path: '../Dataset/noisy_dir'
+  clean_data_path: '../Dataset/clean_dir'
+  unet_model_path: 'model.keras'
+  autoencoder_model_path: 'autoencoder.keras'
+
+inference:
+  noisy_data_path: '../Dataset/noisy_dir'
+  denoised_data_path: '../Dataset/denoised_dir'

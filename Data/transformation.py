@@ -41,4 +41,4 @@ def load_audio_files(directory, sr=16000, max_files=10, target_duration=10):
                     break
             else:
                 print(f"Skipping empty or invalid file: {file_path}")
-    return audio_files
+    return np.array(audio_files)
