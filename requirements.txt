@@ -10,3 +10,7 @@ tqdm
 torchaudio
 pesq
 pystoi
+jiwer
+pandas
+matplotlib
+transformers
