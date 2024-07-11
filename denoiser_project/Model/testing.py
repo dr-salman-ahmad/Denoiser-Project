@@ -1,19 +1,17 @@
-import os
-import yaml
 import torch
 import torchaudio
 import numpy as np
 from pesq import pesq
 from pystoi import stoi
+from pathlib import Path
 from tensorflow import keras
 from denoiser import pretrained
 from denoiser.dsp import convert_audio
+from util import setup_logger, load_config
 from denoiser_project.Data.transformation import load_audio_files
 
-
-def load_config(path):
-    with open(path, 'r') as file:
-        return yaml.safe_load(file)
+LOG = setup_logger()
+CONFIG = load_config("../../config.yaml")
 
 
 def load_audio(path):
@@ -42,15 +40,18 @@ def calculate_average_scores(results):
 
 
 def process_audio_files(noisy_dir, clean_dir, model):
+    noisy_dir = Path(noisy_dir)
+    clean_dir = Path(clean_dir)
     results = []
-    for filename in os.listdir(noisy_dir):
-        if filename.endswith('.wav'):
-            try:
-                noisy_path = os.path.join(noisy_dir, filename)
-                clean_path = os.path.join(clean_dir, filename)
 
-                noisy_wav, sr = load_audio(noisy_path)
-                clean_wav, _ = load_audio(clean_path)
+    for filename in noisy_dir.iterdir():
+        if filename.suffix == '.wav':
+            try:
+                noisy_path = filename
+                clean_path = clean_dir / filename.name
+
+                noisy_wav, sr = load_audio(str(noisy_path))
+                clean_wav, _ = load_audio(str(clean_path))
 
                 noisy_wav = convert_audio(noisy_wav, sr, model.sample_rate, model.chin)
                 clean_wav = convert_audio(clean_wav, sr, model.sample_rate, model.chin)
@@ -59,14 +60,14 @@ def process_audio_files(noisy_dir, clean_dir, model):
                 pesq_score, stoi_score = calculate_scores(clean_wav.squeeze().numpy(), denoised_np, model.sample_rate)
 
                 results.append({
-                    'filename': filename,
+                    'filename': filename.name,
                     'pesq': pesq_score,
                     'stoi': stoi_score
                 })
             except Exception as e:
-                print(f"Error processing {filename}: {str(e)}")
+                LOG.error(f"Error processing {filename}: {str(e)}")
         else:
-            print(f"Skipping {filename}")
+            LOG.error(f"Skipping {filename}")
 
     return results
 
@@ -90,27 +91,37 @@ def process_models(noisy_data, clean_data, unet_model, autoencoder_model, sample
 
 
 def print_results(results, label):
-    print(f"\n{label} Results:")
+    LOG.info(f"\n{label} Results:")
     for result in results:
-        print(f"PESQ: {result['pesq']}, STOI: {result['stoi']}")
+        LOG.info(f"PESQ: {result['pesq']}, STOI: {result['stoi']}")
 
 
 def print_average_scores(average_pesq, average_stoi):
-    print(f"Average PESQ Score: {average_pesq}")
-    print(f"Average STOI Score: {average_stoi}")
+    LOG.info(f"Average PESQ Score: {average_pesq}")
+    LOG.info(f"Average STOI Score: {average_stoi}")
 
 
 # Main execution
 def main():
-    config = load_config('../../config.yaml')
+    if CONFIG is None:
+        LOG.error("Config file not provided.")
+        return
+
+    unet_model_path = CONFIG['testing']['unet_model_path']
+    autoencoder_model_path = CONFIG['testing']['autoencoder_model_path']
+    noisy_data_path = CONFIG['testing']['noisy_data_path']
+    clean_data_path = CONFIG['testing']['clean_data_path']
+    sample_rate = CONFIG['data']['sample_rate']
+    data_duration = CONFIG['data']['data_duration']
+
 
     # Initialize models
     model = pretrained.dns64().cpu()
-    unet_model = keras.models.load_model(config['testing']['unet_model_path'])
-    autoencoder_model = keras.models.load_model(config['testing']['autoencoder_model_path'])
+    unet_model = keras.models.load_model(unet_model_path)
+    autoencoder_model = keras.models.load_model(autoencoder_model_path)
 
     # Process noisy and clean audio files
-    results = process_audio_files(config['testing']['noisy_data_path'], config['testing']['clean_data_path'], model)
+    results = process_audio_files(noisy_data_path, clean_data_path, model)
     print_results(results, "Denoiser Model")
 
     # Calculate average scores
@@ -118,10 +129,8 @@ def main():
     print_average_scores(average_pesq, average_stoi)
 
     # Load additional audio files for further processing
-    noisy_audio_files = load_audio_files(config['testing']['noisy_data_path'], sr=config['data']['sample_rate'],
-                                         target_duration=config['data']['data_duration'])
-    clean_audio_files = load_audio_files(config['testing']['clean_data_path'], sr=config['data']['sample_rate'],
-                                         target_duration=config['data']['data_duration'])
+    noisy_audio_files = load_audio_files(noisy_data_path, sr=sample_rate, target_duration=data_duration)
+    clean_audio_files = load_audio_files(clean_data_path, sr=sample_rate, target_duration=data_duration)
 
     # Convert lists to numpy arrays
     clean_data = np.array(clean_audio_files)
@@ -131,8 +140,7 @@ def main():
     noisy_data = np.expand_dims(noisy_data, axis=-1)
 
     # Process with UNet and Autoencoder models
-    unet_model_results, autoencoder_model_results = process_models(noisy_data, clean_data, unet_model,
-                                                                   autoencoder_model, config['data']['sample_rate'])
+    unet_model_results, autoencoder_model_results = process_models(noisy_data, clean_data, unet_model, autoencoder_model, sample_rate)
 
     # Print results and average scores for UNet and Autoencoder models
     print_results(unet_model_results, "UNet Model")

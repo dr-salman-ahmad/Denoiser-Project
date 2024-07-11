@@ -5,47 +5,56 @@ from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 from IPython import display
 from jiwer import wer, cer
-import yaml
-
+from util import setup_logger, load_config
 from asr_project.Data.ingestion import load_data
 from asr_project.Data.transformation import encode_single_sample
 
+LOG = setup_logger()
+CONFIG = load_config("../../config.yaml")
+
 
 def plot_spectogram(train_dataset, num_to_char, wavs_path, df_train):
-    fig = plt.figure(figsize=(8, 5))
-    for batch in train_dataset.take(1):
-        spectrogram = batch[0][0].numpy()
-        spectrogram = np.array([np.trim_zeros(x) for x in np.transpose(spectrogram)])
-        label = batch[1][0]
-        # Spectrogram
-        label = tf.strings.reduce_join(num_to_char(label)).numpy().decode("utf-8")
-        ax = plt.subplot(2, 1, 1)
-        ax.imshow(spectrogram, vmax=1)
-        ax.set_title(label)
-        ax.axis("off")
-        # Wav
-        file = tf.io.read_file(wavs_path + list(df_train["file_name"])[0] + ".wav")
-        audio, _ = tf.audio.decode_wav(file)
-        audio = audio.numpy()
-        ax = plt.subplot(2, 1, 2)
-        plt.plot(audio)
-        ax.set_title("Signal Wave")
-        ax.set_xlim(0, len(audio))
-        display.display(display.Audio(np.transpose(audio), rate=16000))
-    plt.show()
+    try:
+        fig = plt.figure(figsize=(8, 5))
+        for batch in train_dataset.take(1):
+            spectrogram = batch[0][0].numpy()
+            spectrogram = np.array([np.trim_zeros(x) for x in np.transpose(spectrogram)])
+            label = batch[1][0]
+            # Spectrogram
+            label = tf.strings.reduce_join(num_to_char(label)).numpy().decode("utf-8")
+            ax = plt.subplot(2, 1, 1)
+            ax.imshow(spectrogram, vmax=1)
+            ax.set_title(label)
+            ax.axis("off")
+            # Wav
+            file = tf.io.read_file(wavs_path + list(df_train["file_name"])[0] + ".wav")
+            audio, _ = tf.audio.decode_wav(file)
+            audio = audio.numpy()
+            ax = plt.subplot(2, 1, 2)
+            plt.plot(audio)
+            ax.set_title("Signal Wave")
+            ax.set_xlim(0, len(audio))
+            display.display(display.Audio(np.transpose(audio), rate=16000))
+        plt.show()
+    except Exception as e:
+        LOG.info(e)
 
 
 def CTCLoss(y_true, y_pred):
-    # Compute the training-time loss value
-    batch_len = tf.cast(tf.shape(y_true)[0], dtype="int64")
-    input_length = tf.cast(tf.shape(y_pred)[1], dtype="int64")
-    label_length = tf.cast(tf.shape(y_true)[1], dtype="int64")
+    try:
+        # Compute the training-time loss value
+        batch_len = tf.cast(tf.shape(y_true)[0], dtype="int64")
+        input_length = tf.cast(tf.shape(y_pred)[1], dtype="int64")
+        label_length = tf.cast(tf.shape(y_true)[1], dtype="int64")
 
-    input_length = input_length * tf.ones(shape=(batch_len, 1), dtype="int64")
-    label_length = label_length * tf.ones(shape=(batch_len, 1), dtype="int64")
+        input_length = input_length * tf.ones(shape=(batch_len, 1), dtype="int64")
+        label_length = label_length * tf.ones(shape=(batch_len, 1), dtype="int64")
 
-    loss = keras.backend.ctc_batch_cost(y_true, y_pred, input_length, label_length)
-    return loss
+        loss = keras.backend.ctc_batch_cost(y_true, y_pred, input_length, label_length)
+        return loss
+    except Exception as e:
+        LOG.info(e)
+        return None
 
 
 def build_model(input_dim, output_dim, rnn_layers=5, rnn_units=128):
@@ -126,18 +135,18 @@ def decode_batch_predictions(pred, num_to_char):
 class CallbackEval(keras.callbacks.Callback):
     """Displays a batch of outputs after every epoch."""
 
-    def __init__(self, dataset, num_to_char, model):
+    def __init__(self, dataset, num_to_char, model_ref):
         super().__init__()
         self.dataset = dataset
         self.num_to_char = num_to_char
-        self.model = model
+        self.model_ref = model_ref
 
     def on_epoch_end(self, epoch: int, logs=None):
         predictions = []
         targets = []
         for batch in self.dataset:
             X, y = batch
-            batch_predictions = self.model.predict(X)
+            batch_predictions = self.model_ref.predict(X)
             batch_predictions = decode_batch_predictions(batch_predictions, self.num_to_char)
             predictions.extend(batch_predictions)
             for label in y:
@@ -147,21 +156,26 @@ class CallbackEval(keras.callbacks.Callback):
                 targets.append(label)
         wer_score = wer(targets, predictions)
         cer_score = cer(targets, predictions)
-        print("-" * 100)
-        print(f"Word Error Rate: {wer_score:.4f} and CER: {cer_score:.4f}")
-        print("-" * 100)
-        for i in np.random.randint(0, len(predictions), 2):
-            print(f"Target    : {targets[i]}")
-            print(f"Prediction: {predictions[i]}")
-            print("-" * 100)
+        LOG.info(f"Word Error Rate: {wer_score:.4f} and CER: {cer_score:.4f}")
+        for index in np.random.randint(0, len(predictions), 2):
+            LOG.info(f"Target    : {targets[index]}")
+            LOG.info(f"Prediction: {predictions[index]}")
 
 
 def main():
-    with open('../../config.yaml', 'r') as file:
-        config = yaml.safe_load(file)
-    data_path = config['data']['asr_data_path']
-    wave_path = data_path + "/wavs/"
-    df_train, df_val = load_data(data_path, config)
+    if CONFIG is None:
+        LOG.error("Config file not provided.")
+        return
+
+    data_path = CONFIG['data']['asr_data_path']
+    frame_length = CONFIG['asr_training']['frame_length']
+    frame_step = CONFIG['asr_training']['frame_step']
+    fft_length = CONFIG['asr_training']['fft_length']
+    batch_size = CONFIG['asr_training']['batch_size']
+    epochs = CONFIG['asr_training']['epochs']
+
+    wave_path = f"{data_path}/wavs/"
+    df_train, df_val = load_data(data_path, CONFIG)
     # The set of characters accepted in the transcription.
     characters = [x for x in "abcdefghijklmnopqrstuvwxyz'?! "]
     # Mapping characters to integers
@@ -171,20 +185,11 @@ def main():
         vocabulary=char_to_num.get_vocabulary(), oov_token="", invert=True
     )
 
-    print(
+    LOG.info(
         f"The vocabulary is: {char_to_num.get_vocabulary()} "
         f"(size ={char_to_num.vocabulary_size()})"
     )
 
-    # An integer scalar Tensor. The window length in samples.
-    frame_length = config['asr_training']['frame_length']
-    # An integer scalar Tensor. The number of samples to step.
-    frame_step = config['asr_training']['frame_step']
-    # An integer scalar Tensor. The size of the FFT to apply.
-    # If not provided, uses the smallest power of 2 enclosing frame_length.
-    fft_length = config['asr_training']['fft_length']
-
-    batch_size = config['asr_training']['batch_size']
     # Define the training dataset
     train_dataset = tf.data.Dataset.from_tensor_slices(
         (list(df_train["file_name"]), list(df_train["normalized_transcription"]))
@@ -218,8 +223,6 @@ def main():
     )
     model.summary(line_length=110)
 
-    # Define the number of epochs.
-    epochs = config['asr_training']['epochs']
     # Callback function to check transcription on the val set.
     validation_callback = CallbackEval(validation_dataset, num_to_char, model)
     # Train the model
@@ -232,6 +235,7 @@ def main():
 
     # Save the model
     model.save("model.keras")
+    return history
 
 if __name__ == "__main__":
     main()

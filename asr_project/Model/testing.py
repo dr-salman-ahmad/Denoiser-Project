@@ -1,28 +1,32 @@
-import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from jiwer import wer, cer
 from training import decode_batch_predictions, CTCLoss
 from asr_project.Data.ingestion import load_data
 from asr_project.Data.transformation import encode_single_sample
-import yaml
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 import librosa
 import torch
+from util import setup_logger, load_config
+
+LOG = setup_logger()
+CONFIG = load_config("../../config.yaml")
 
 
-def wave2vec_testing(df_val, config):
+def wave2vec_testing(df_val):
     # Load pretrained model and tokenizer (processor)
-    model_name = config['wave2vec']['model_name']
+    model_name = CONFIG['asr_inference']['model_name']
+    data_path = CONFIG['data']['asr_data_path']
+    sampling_rate = CONFIG['asr_inference']['sample_rate']
     built_in_model = Wav2Vec2ForCTC.from_pretrained(model_name)
     processor = Wav2Vec2Processor.from_pretrained(model_name)
     transcriptions = []
-    for i in range(len(df_val)):
+    for index in range(len(df_val)):
         # Example usage: transcribe an audio file
-        audio_file = config['data']['asr_data_path'] + "/wavs/" + str(df_val.iloc[i]['file_name']) + ".wav"
-        input_audio, _ = librosa.load(audio_file, sr=config['wave2vec']['sample_rate'])  # Adjust sample rate as per your audio
+        audio_file = f"{data_path}/wavs/" + str(df_val.iloc[index]['file_name']) + ".wav"
+        input_audio, _ = librosa.load(audio_file, sr=sampling_rate)  # Adjust sample rate as per your audio
 
-        input_values = processor(input_audio, return_tensors="pt", sampling_rate=config['wave2vec']['sample_rate']).input_values
+        input_values = processor(input_audio, return_tensors="pt", sampling_rate=sampling_rate).input_values
         with torch.no_grad():
             logits = built_in_model(input_values).logits
 
@@ -34,23 +38,24 @@ def wave2vec_testing(df_val, config):
 
 
 def main():
-    with open('../../config.yaml', 'r') as file:
-        config = yaml.safe_load(file)
+    if CONFIG is None:
+        LOG.error("Config file not provided.")
+        return
 
-    data_path = config['data']['asr_data_path']
-    wave_path = data_path + "/wavs/"
-    df_train, df_val = load_data(data_path, config)
+    data_path = CONFIG['data']['asr_data_path']
+    frame_length = CONFIG['asr_testing']['frame_length']
+    frame_step = CONFIG['asr_testing']['frame_step']
+    fft_length = CONFIG['asr_testing']['fft_length']
+    batch_size = CONFIG['asr_testing']['batch_size']
+
+    wave_path = f"{data_path}/wavs/"
+    df_train, df_val = load_data(data_path, CONFIG)
 
     characters = [x for x in "abcdefghijklmnopqrstuvwxyz'?! "]
     char_to_num = keras.layers.StringLookup(vocabulary=characters, oov_token="")
     num_to_char = keras.layers.StringLookup(
         vocabulary=char_to_num.get_vocabulary(), oov_token="", invert=True
     )
-
-    frame_length = config['asr_testing']['frame_length']
-    frame_step = config['asr_testing']['frame_step']
-    fft_length = config['asr_testing']['fft_length']
-    batch_size = config['asr_testing']['batch_size']
 
     test_dataset = tf.data.Dataset.from_tensor_slices(
         (list(df_val["file_name"]), list(df_val["normalized_transcription"]))
@@ -78,24 +83,21 @@ def main():
             label = tf.strings.reduce_join(num_to_char(label)).numpy().decode("utf-8")
             targets.append(label)
 
-    wave2vec_predictions = wave2vec_testing(df_val, config)
+    wave2vec_predictions = wave2vec_testing(df_val)
     wer_score = wer(targets, predictions)
     cer_score = cer(targets, predictions)
 
     wave2vec_wer_score = wer(targets, wave2vec_predictions)
     wave2vec_cer_score = wer(targets, wave2vec_predictions)
 
-    print("-" * 100)
-    print("My Model Results")
-    print(f"Word Error Rate: {wer_score:.4f} and CER: {cer_score:.4f}")
-    print("Wave2vec Model Results")
-    print(f"Word Error Rate: {wave2vec_wer_score:.4f} and CER: {wave2vec_cer_score:.4f}")
-    print("-" * 100)
-    for i in range(len(predictions)):
-        print(f"Target    : {targets[i]}")
-        print(f"Prediction: {predictions[i]}")
-        print(f"Wave2vec Prediction: {wave2vec_predictions[i]}")
-        print("-" * 100)
+    LOG.info("My Model Results")
+    LOG.info(f"Word Error Rate: {wer_score:.4f} and CER: {cer_score:.4f}")
+    LOG.info("Wave2vec Model Results")
+    LOG.info(f"Word Error Rate: {wave2vec_wer_score:.4f} and CER: {wave2vec_cer_score:.4f}")
+    for index in range(len(predictions)):
+        LOG.info(f"Target    : {targets[index]}")
+        LOG.info(f"Prediction: {predictions[index]}")
+        LOG.info(f"Wave2vec Prediction: {wave2vec_predictions[index]}")
 
 
 if __name__ == "__main__":
